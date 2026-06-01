@@ -5,8 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, request, session
 
-from ai_processing import nutri
-
+from ai_processing import gerar_sugestao, nutri
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 app = Flask(__name__)
@@ -198,6 +197,32 @@ ESTILOS = """
 
     .btn-secondary:hover {
         background: #243044;
+    }
+
+    .btn-tertiary {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+    }
+
+    .btn-tertiary:hover {
+        color: var(--text);
+        border-color: var(--muted);
+    }
+
+    .ingredient-list {
+        list-style: none;
+        margin-bottom: 1rem;
+    }
+
+    .ingredient-list li {
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+    }
+
+    .ingredient-list li strong {
+        color: var(--text);
     }
 
     .btn-row {
@@ -418,7 +443,8 @@ def home():
         <div class="actions">
             <a href="/sobre" class="btn btn-primary">➕ Adicionar refeição</a>
             <a href="/contato" class="btn btn-secondary">📊 Ver consumo nutricional</a>
-            <a href="/zerar"class="btn btn-tertiary">Zerar consumo</a>
+            <a href="/zerar" class="btn btn-tertiary">Zerar consumo</a>
+            <a href="/sugestao" class="btn btn-tertiary">Sugerir refeição</a>
         </div>
     """)
 
@@ -487,6 +513,52 @@ def contato():
         <div class="btn-row">
             <a href="/sobre" class="btn btn-primary">Adicionar refeição</a>
             <a href="/" class="btn btn-secondary">Início</a>
+        </div>
+    """)
+
+def _lista_ingredientes(ingredientes: list[str], quantidades: list[str]) -> str:
+    if not ingredientes:
+        return "<p class='subtitle'>—</p>"
+    itens = []
+    for i, ing in enumerate(ingredientes):
+        qtd = quantidades[i] if i < len(quantidades) else "—"
+        itens.append(
+            f"<li><strong>{escape(ing)}</strong> — {escape(qtd)}</li>"
+        )
+    return f"<ul class='ingredient-list'>{''.join(itens)}</ul>"
+
+
+@app.route("/sugestao", methods=["GET", "POST"])
+def sugestao_page():
+    if request.method == "POST":
+        pedido = request.form.get("pedido", "")
+        nome, ingredientes, quantidades = gerar_sugestao(pedido)
+        return pagina(f"""
+            <h2>Sugestão de refeição</h2>
+            <p class="subtitle">Sugestão gerada com base no seu pedido.</p>
+            <p class="meal-name"><strong>{escape(nome)}</strong></p>
+            <p class="subtitle" style="margin-bottom: 0.75rem;">Ingredientes:</p>
+            {_lista_ingredientes(ingredientes, quantidades)}
+            <div class="btn-row">
+                <a href="/sugestao" class="btn btn-primary">Sugerir outra</a>
+                <a href="/" class="btn btn-secondary">Início</a>
+            </div>
+        """)
+
+    return pagina("""
+        <h2>Sugerir refeição</h2>
+        <p class="subtitle">Descreva o que você quer — a IA monta uma sugestão.</p>
+        <form action="/sugestao" method="POST">
+            <div>
+                <label for="pedido">O que você está buscando?</label>
+                <textarea id="pedido" name="pedido"
+                    placeholder="Ex.: algo leve e rico em proteína para o almoço"
+                    required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Gerar sugestão</button>
+        </form>
+        <div class="btn-row">
+            <a href="/" class="btn btn-secondary">← Voltar ao início</a>
         </div>
     """)
 

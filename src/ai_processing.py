@@ -25,6 +25,16 @@ def parse_nutricional(texto: str) -> tuple[float, float, float, float]:
         )
     return valores[0], valores[1], valores[2], valores[3]
 
+def sugestao_parse(texto: str) -> tuple[str, list[str], list[str]]:
+    partes = [p.strip() for p in texto.strip().split("|")]
+    if len(partes) != 3:
+        raise ValueError(
+            f"Esperados 3 partes separadas por |, obtidas {len(partes)}: {texto!r}"
+        )
+    nome = partes[0]
+    ingredientes = [i.strip() for i in partes[1].split(";") if i.strip()]
+    quantidades = [q.strip() for q in partes[2].split(";") if q.strip()]
+    return nome, ingredientes, quantidades
 
 def nutri(refe: str) -> tuple[float, float, float, float]:
     prompt = (
@@ -37,3 +47,14 @@ def nutri(refe: str) -> tuple[float, float, float, float]:
     )
     resposta = chat.send_message(prompt)
     return parse_nutricional(resposta.text)
+
+def gerar_sugestao(pedido: str) -> tuple[str, list[str], list[str]]:
+    prompt = (
+        f"gere uma sugestao de refeicao conforme o pedido do usuario: {pedido}. "
+        "Responda SOMENTE com 3 partes separadas por |, nesta ordem: "
+        "nome da refeicao | ingrediente1; ingrediente2; ... | quantidade1; quantidade2; ... "
+        "Use ponto e virgula entre ingredientes e entre quantidades (na mesma ordem). "
+        "Sem texto extra."
+    )
+    resposta = chat.send_message(prompt)
+    return sugestao_parse(resposta.text)
