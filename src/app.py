@@ -1,9 +1,10 @@
 import os
+from datetime import datetime
 from html import escape
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, request, session
+from flask import Flask, redirect, request, session, url_for
 
 from ai_processing import gerar_sugestao, nutri
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -346,8 +347,77 @@ ESTILOS = """
     .meal-name strong { color: var(--text); font-style: normal; }
 
     .text-center { text-align: center; }
+
+    .meal-history {
+        list-style: none;
+        margin: 1.5rem 0 0;
+    }
+
+    .meal-entry {
+        padding: 1rem 0;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .meal-entry:last-child { border-bottom: none; }
+
+    .meal-entry-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 0.75rem;
+        margin-bottom: 0.35rem;
+    }
+
+    .meal-entry-header strong {
+        font-size: 0.95rem;
+        line-height: 1.35;
+        flex: 1;
+    }
+
+    .meal-entry-time {
+        font-size: 0.8rem;
+        color: var(--muted);
+        white-space: nowrap;
+    }
+
+    .meal-entry-macros {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.65rem;
+    }
+
+    .meal-entry-macros span { color: var(--calories); font-weight: 600; }
+
+    .btn-remove {
+        padding: 0.45rem 0.85rem;
+        border-radius: 8px;
+        font-family: inherit;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #fca5a5;
+        background: rgba(248, 113, 113, 0.12);
+        border: 1px solid rgba(248, 113, 113, 0.25);
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+
+    .btn-remove:hover { background: rgba(248, 113, 113, 0.2); }
+
+    .empty-history {
+        margin-top: 1.25rem;
+        padding: 1rem;
+        text-align: center;
+        color: var(--muted);
+        background: var(--surface-2);
+        border-radius: 10px;
+        font-size: 0.9rem;
+    }
 </style>
 """
+
+
+def _refeicoes() -> list[dict]:
+    return session.get("refeicoes", [])
 
 
 def _totais():
@@ -357,6 +427,53 @@ def _totais():
         "gorduras": session.get("gorduras", 0.0),
         "calorias": session.get("calorias", 0.0),
     }
+
+
+def _recalcular_totais():
+    proteinas = carboidratos = gorduras = calorias = 0.0
+    for refeicao in _refeicoes():
+        proteinas += refeicao["proteinas"]
+        carboidratos += refeicao["carboidratos"]
+        gorduras += refeicao["gorduras"]
+        calorias += refeicao["calorias"]
+    session["proteinas"] = proteinas
+    session["carboidratos"] = carboidratos
+    session["gorduras"] = gorduras
+    session["calorias"] = calorias
+
+
+def _adicionar_refeicao(
+    texto: str,
+    proteinas: float,
+    carboidratos: float,
+    gorduras: float,
+    calorias: float,
+):
+    refeicoes = list(_refeicoes())
+    proximo_id = session.get("proximo_id", 1)
+    session["proximo_id"] = proximo_id + 1
+    refeicoes.append(
+        {
+            "id": proximo_id,
+            "texto": texto.strip() or "Refeição",
+            "proteinas": proteinas,
+            "carboidratos": carboidratos,
+            "gorduras": gorduras,
+            "calorias": calorias,
+            "horario": datetime.now().strftime("%H:%M"),
+        }
+    )
+    session["refeicoes"] = refeicoes
+    _recalcular_totais()
+
+
+def _remover_refeicao(refeicao_id: int) -> bool:
+    refeicoes = [r for r in _refeicoes() if r["id"] != refeicao_id]
+    if len(refeicoes) == len(_refeicoes()):
+        return False
+    session["refeicoes"] = refeicoes
+    _recalcular_totais()
+    return True
 
 
 def _fmt(n: float) -> str:
@@ -411,23 +528,43 @@ def _macro_cards(proteinas, carboidratos, gorduras, calorias):
         </div>
     """
 
-@app.route("/zerar")
-def zerar():
-    session.clear()
-    return pagina(f"""
-        <h2>Consumo zerado</h2>
-        <p class="subtitle">O consumo foi zerado com sucesso.</p>
-        <div class="btn-row">
-            <a href="/" class="btn btn-primary">Voltar ao início</a>
-        </div>
-    """)
-    return pagina(f"""
-        <h2>Consumo zerado</h2>
-        <p class="subtitle">O consumo foi zerado com sucesso.</p>
-        <div class="btn-row">
-            <a href="/" class="btn btn-primary">Voltar ao início</a>
-        </div>
-    """)
+
+def _lista_refeicoes_dia() -> str:
+    refeicoes = _refeicoes()
+    if not refeicoes:
+        return (
+            '<p class="empty-history">Nenhuma refeição registrada hoje. '
+            'Adicione uma para ver o histórico aqui.</p>'
+        )
+    itens = []
+    for refeicao in reversed(refeicoes):
+        rid = refeicao["id"]
+        texto = escape(refeicao["texto"])
+        horario = escape(refeicao.get("horario", ""))
+        cal = _fmt(refeicao["calorias"])
+        p = _fmt(refeicao["proteinas"])
+        c = _fmt(refeicao["carboidratos"])
+        g = _fmt(refeicao["gorduras"])
+        itens.append(
+            f"""
+            <li class="meal-entry">
+                <div class="meal-entry-header">
+                    <strong>{texto}</strong>
+                    <span class="meal-entry-time">{horario}</span>
+                </div>
+                <p class="meal-entry-macros">
+                    <span>{cal} kcal</span>
+                    · P {p}g · C {c}g · G {g}g
+                </p>
+                <form action="{url_for('remover_refeicao')}" method="POST">
+                    <input type="hidden" name="id" value="{rid}">
+                    <button type="submit" class="btn-remove">Remover</button>
+                </form>
+            </li>
+            """
+        )
+    return f'<ul class="meal-history">{"".join(itens)}</ul>'
+
 
 @app.route("/")
 def home():
@@ -443,7 +580,6 @@ def home():
         <div class="actions">
             <a href="/sobre" class="btn btn-primary">➕ Adicionar refeição</a>
             <a href="/contato" class="btn btn-secondary">📊 Ver consumo nutricional</a>
-            <a href="/zerar" class="btn btn-tertiary">Zerar consumo</a>
             <a href="/sugestao" class="btn btn-tertiary">Sugerir refeição</a>
         </div>
     """)
@@ -458,11 +594,7 @@ def sobre():
         print(f"Refeição adicionada: {refe}")
         print(proteinas, carboidratos, gorduras, calorias)
 
-        totais = _totais()
-        session["proteinas"] = totais["proteinas"] + proteinas
-        session["carboidratos"] = totais["carboidratos"] + carboidratos
-        session["gorduras"] = totais["gorduras"] + gorduras
-        session["calorias"] = totais["calorias"] + calorias
+        _adicionar_refeicao(refe, proteinas, carboidratos, gorduras, calorias)
 
         refe_safe = escape(refe)
         return pagina(f"""
@@ -498,18 +630,40 @@ def sobre():
     """)
 
 
+@app.route("/contato/remover", methods=["POST"])
+def remover_refeicao():
+    try:
+        refeicao_id = int(request.form.get("id", 0))
+    except (TypeError, ValueError):
+        refeicao_id = 0
+    _remover_refeicao(refeicao_id)
+    return redirect(url_for("contato"))
+
+
 @app.route("/contato")
 def contato():
     totais = _totais()
+    n = len(_refeicoes())
+    subtitulo = (
+        f"Totais de {n} refeição registrada hoje."
+        if n == 1
+        else f"Totais de {n} refeições registradas hoje."
+        if n
+        else "Totais acumulados de todas as refeições registradas."
+    )
     return pagina(f"""
         <h2>Consumo do dia</h2>
-        <p class="subtitle">Totais acumulados de todas as refeições registradas.</p>
+        <p class="subtitle">{subtitulo}</p>
         {_macro_cards(
             totais["proteinas"],
             totais["carboidratos"],
             totais["gorduras"],
             totais["calorias"],
         )}
+        <p class="subtitle" style="margin-top: 1.5rem; margin-bottom: 0.5rem;">
+            Histórico do dia
+        </p>
+        {_lista_refeicoes_dia()}
         <div class="btn-row">
             <a href="/sobre" class="btn btn-primary">Adicionar refeição</a>
             <a href="/" class="btn btn-secondary">Início</a>
@@ -528,19 +682,67 @@ def _lista_ingredientes(ingredientes: list[str], quantidades: list[str]) -> str:
     return f"<ul class='ingredient-list'>{''.join(itens)}</ul>"
 
 
+def _form_registrar_sugestao(
+    nome: str, proteinas: float, carboidratos: float, gorduras: float, calorias: float
+) -> str:
+    return f"""
+        <form action="/sugestao/registrar" method="POST" style="margin-top: 1rem;">
+            <input type="hidden" name="nome" value="{escape(nome)}">
+            <input type="hidden" name="proteinas" value="{proteinas}">
+            <input type="hidden" name="carboidratos" value="{carboidratos}">
+            <input type="hidden" name="gorduras" value="{gorduras}">
+            <input type="hidden" name="calorias" value="{calorias}">
+            <button type="submit" class="btn btn-primary" style="width: 100%;">
+                ➕ Adicionar ao consumo do dia
+            </button>
+        </form>
+    """
+
+
+@app.route("/sugestao/registrar", methods=["POST"])
+def registrar_sugestao():
+    nome = request.form.get("nome", "Refeição sugerida")
+    proteinas = float(request.form["proteinas"])
+    carboidratos = float(request.form["carboidratos"])
+    gorduras = float(request.form["gorduras"])
+    calorias = float(request.form["calorias"])
+
+    _adicionar_refeicao(nome, proteinas, carboidratos, gorduras, calorias)
+
+    return pagina(f"""
+        <div class="text-center">
+            <div class="success-icon">✓</div>
+            <h2>Adicionado ao consumo do dia</h2>
+            <p class="subtitle">Os macros da sugestão foram somados aos seus totais.</p>
+        </div>
+        <p class="meal-name"><strong>{escape(nome)}</strong></p>
+        <p class="subtitle" style="margin-bottom: 0.75rem;">Valores registrados:</p>
+        {_macro_cards(proteinas, carboidratos, gorduras, calorias)}
+        <div class="btn-row">
+            <a href="/contato" class="btn btn-primary">Ver consumo do dia</a>
+            <a href="/" class="btn btn-secondary">Início</a>
+        </div>
+    """)
+
+
 @app.route("/sugestao", methods=["GET", "POST"])
 def sugestao_page():
     if request.method == "POST":
         pedido = request.form.get("pedido", "")
-        nome, ingredientes, quantidades = gerar_sugestao(pedido)
+        nome, ingredientes, quantidades, proteinas, carboidratos, gorduras, calorias = (
+            gerar_sugestao(pedido)
+        )
         return pagina(f"""
             <h2>Sugestão de refeição</h2>
             <p class="subtitle">Sugestão gerada com base no seu pedido.</p>
             <p class="meal-name"><strong>{escape(nome)}</strong></p>
             <p class="subtitle" style="margin-bottom: 0.75rem;">Ingredientes:</p>
             {_lista_ingredientes(ingredientes, quantidades)}
+            <p class="subtitle" style="margin-bottom: 0.75rem;">Fator nutricional estimado:</p>
+            {_macro_cards(proteinas, carboidratos, gorduras, calorias)}
+            {_form_registrar_sugestao(nome, proteinas, carboidratos, gorduras, calorias)}
             <div class="btn-row">
-                <a href="/sugestao" class="btn btn-primary">Sugerir outra</a>
+                <a href="/sugestao" class="btn btn-secondary">Sugerir outra</a>
                 <a href="/" class="btn btn-secondary">Início</a>
             </div>
         """)

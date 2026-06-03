@@ -6,6 +6,7 @@ Aplicação web em Flask para registrar refeições e acompanhar **proteínas, c
 
 - Registrar refeições em linguagem natural (ex.: *“2 ovos, pão integral e café”*)
 - Acumular macros e calorias na sessão do dia
+- Histórico do dia com horário e remoção individual de refeições
 - Interface web simples e responsiva
 
 ## Pré-requisitos
