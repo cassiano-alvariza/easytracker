@@ -1,52 +1,59 @@
 """
 EasyTracker Flask application entry point.
 
-This file is intentionally thin: it wires HTTP routes to three collaborators:
-  - RefeicaoStore  → read/write meals in the user's session
-  - NutricaoAIService → Gemini calls for macros and suggestions
-  - PageRenderer   → build HTML responses
-
-Run from the src/ directory:
-    python app.py
+Wires HTTP routes to three collaborators:
+  - SQLiteRefeicaoStore → lê/escreve refeições no SQLite
+  - NutricaoAIService   → chamadas ao Gemini para macros e sugestões
+  - PageRenderer        → gera as respostas HTML
 """
 
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, redirect, request, session, url_for
 
-# Load .env from project root (one level above src/).
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from store.sqlite_refeicao_store import SQLiteRefeicaoStore
 
 from models import Macros
 from services.nutricao_ai import NutricaoAIService
-from store.refeicao_store import RefeicaoStore
+from store.db import close_db, get_db, init_db
 from views.pages import PageRenderer
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-only-troque-no-env")
 
-# Long-lived service objects: safe to reuse across requests (no per-user state).
+# Cria as tabelas na primeira execução (operação idempotente).
+init_db()
+
+# Registra o fechamento da conexão ao fim de cada request.
+app.teardown_appcontext(close_db)
+
+# Objetos de longa vida: sem estado por usuário, seguros para reutilizar.
 nutricao_ai = NutricaoAIService.from_env()
 pages = PageRenderer()
 
 
-def _store() -> RefeicaoStore:
+def _store() -> SQLiteRefeicaoStore:
     """
-    Build a store bound to the current user's Flask session.
+    Constrói um store vinculado ao UUID de sessão do usuário atual.
 
-    Called at the start of each route that needs meal data. Keeping this as a
-    small factory makes it obvious where session access happens.
+    O UUID é gerado uma vez por browser e gravado no cookie de sessão do Flask.
+    Nunca lemos/escrevemos refeicoes diretamente na sessão — só via store.
     """
-    return RefeicaoStore(session)
+    if "sessao_id" not in session:
+        session["sessao_id"] = str(uuid.uuid4())
+    return SQLiteRefeicaoStore(get_db(), session["sessao_id"])
 
 
 @app.route("/")
 def home():
-    """Home: show today's calorie total and main navigation."""
+    """Home: exibe o total de calorias do dia e a navegação principal."""
     store = _store()
     return pages.render_home(store.totals())
 
@@ -54,10 +61,10 @@ def home():
 @app.route("/sobre", methods=["GET", "POST"])
 def sobre():
     """
-    Add a meal manually.
+    Registra uma refeição manualmente.
 
-    POST: send description to Gemini → save macros via RefeicaoStore.
-    GET:  show the textarea form.
+    POST: envia descrição ao Gemini → salva macros via SQLiteRefeicaoStore.
+    GET:  exibe o formulário com textarea.
     """
     store = _store()
 
@@ -72,7 +79,7 @@ def sobre():
 
 @app.route("/contato/remover", methods=["POST"])
 def remover_refeicao():
-    """Remove one meal from today's history by its id."""
+    """Remove uma refeição do histórico do dia pelo seu id."""
     store = _store()
     try:
         refeicao_id = int(request.form.get("id", 0))
@@ -84,7 +91,7 @@ def remover_refeicao():
 
 @app.route("/contato")
 def contato():
-    """Daily summary: macro totals + meal list."""
+    """Resumo diário: totais de macros + lista de refeições."""
     store = _store()
     return pages.render_daily_consumption(
         totais=store.totals(),
@@ -96,9 +103,9 @@ def contato():
 @app.route("/sugestao/registrar", methods=["POST"])
 def registrar_sugestao():
     """
-    Add a previously generated AI suggestion to the daily log.
+    Adiciona uma sugestão da IA ao diário do dia.
 
-    Macros arrive from hidden form fields (no second Gemini call).
+    Os macros chegam via campos ocultos do formulário (sem segunda chamada ao Gemini).
     """
     store = _store()
     nome = request.form.get("nome", "Refeição sugerida")
@@ -115,10 +122,10 @@ def registrar_sugestao():
 @app.route("/sugestao", methods=["GET", "POST"])
 def sugestao_page():
     """
-    AI meal suggestion flow.
+    Fluxo de sugestão de refeição via IA.
 
-    POST: ask Gemini for a suggestion and show ingredients + macros.
-    GET:  show the request form.
+    POST: pede sugestão ao Gemini e exibe ingredientes + macros.
+    GET:  exibe o formulário de pedido.
     """
     if request.method == "POST":
         pedido = request.form.get("pedido", "")

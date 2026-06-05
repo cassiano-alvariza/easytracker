@@ -100,9 +100,7 @@ class NutricaoAIService:
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         if not api_key:
-            raise RuntimeError(
-                "Set GOOGLE_API_KEY in .env (copy from .env.example)."
-            )
+            raise RuntimeError("Set GOOGLE_API_KEY in .env (copy from .env.example).")
         # Long-lived client; individual chats are created per request below.
         self._client = genai.Client(api_key=api_key)
         self._model = model
@@ -139,7 +137,7 @@ class NutricaoAIService:
             "separados por vírgula."
         )
         resposta = self._new_chat().send_message(prompt)
-        return Macros.from_tuple(parse_nutricional(resposta.text))
+        return Macros.from_tuple(parse_nutricional(resposta.text or ""))
 
     def generate_suggestion(self, user_request: str) -> SugestaoRefeicao:
         """
@@ -160,10 +158,10 @@ class NutricaoAIService:
         )
         resposta = self._new_chat().send_message(prompt)
         try:
-            return sugestao_parse(resposta.text)
+            return sugestao_parse(resposta.text or "")
         except ValueError:
             # Partial parse: keep name + ingredients, recompute macros via AI.
-            partes = [p.strip() for p in resposta.text.strip().split("|")]
+            partes = [p.strip() for p in (resposta.text or "").strip().split("|")]
             if len(partes) < 3:
                 raise
             nome = partes[0]
