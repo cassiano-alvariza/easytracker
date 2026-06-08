@@ -1,0 +1,7 @@
+"""Blueprint de autenticação (login, cadastro, logout)."""
+
+from flask import Blueprint
+
+bp = Blueprint("auth", __name__)
+
+from auth import routes  # noqa: E402, F401

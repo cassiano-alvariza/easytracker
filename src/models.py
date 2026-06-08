@@ -10,6 +10,52 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from flask_login import UserMixin
+
+
+@dataclass
+class Usuario(UserMixin):
+    """
+    Conta de usuário registrada no banco.
+
+    Herda UserMixin do Flask-Login para prover is_authenticated, is_active,
+    is_anonymous e get_id() sem boilerplate.
+
+    Os campos de perfil físico (sexo, peso, altura, idade, objetivo, tmb) são
+    opcionais: usuários criados antes do onboarding terão None nesses campos.
+    """
+
+    id: int
+    email: str
+    nome: str
+    senha_hash: str
+    sexo: str = ""
+    peso: float | None = None
+    altura: int | None = None
+    idade: int | None = None
+    objetivo: str = ""
+    tmb: float | None = None
+
+    def get_id(self) -> str:
+        """Flask-Login usa string como identificador de sessão."""
+        return str(self.id)
+
+    @classmethod
+    def from_row(cls, row) -> Usuario:
+        """Reconstrói um Usuario a partir de uma linha do SQLite."""
+        return cls(
+            id=int(row["id"]),
+            email=str(row["email"]),
+            nome=str(row["nome"]),
+            senha_hash=str(row["senha_hash"]),
+            sexo=str(row["sexo"] or ""),
+            peso=float(row["peso"]) if row["peso"] is not None else None,
+            altura=int(row["altura"]) if row["altura"] is not None else None,
+            idade=int(row["idade"]) if row["idade"] is not None else None,
+            objetivo=str(row["objetivo"] or ""),
+            tmb=float(row["tmb"]) if row["tmb"] is not None else None,
+        )
+
 
 @dataclass(frozen=True)
 class Macros:

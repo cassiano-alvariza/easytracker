@@ -5,79 +5,113 @@ Wires HTTP routes to three collaborators:
   - SQLiteRefeicaoStore → lê/escreve refeições no SQLite
   - NutricaoAIService   → chamadas ao Gemini para macros e sugestões
   - PageRenderer        → gera as respostas HTML
+
+Segurança:
+  - Flask-Login  → sessões de usuário e @login_required
+  - Flask-WTF    → proteção CSRF em todos os formulários POST
+  - Flask-Limiter → rate limiting no /login (5 tentativas/minuto)
 """
 
 from __future__ import annotations
 
 import os
-import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, redirect, request, session, url_for
+from flask import (
+    Flask,
+    Response,
+    redirect,
+    request,
+    stream_with_context,
+    url_for,
+)
+from flask_login import current_user, login_required
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-
-from store.sqlite_refeicao_store import SQLiteRefeicaoStore
-
+from extensions import csrf, limiter, login_manager
 from models import Macros
 from services.nutricao_ai import NutricaoAIService
 from store.db import close_db, get_db, init_db
+from store.sqlite_refeicao_store import SQLiteRefeicaoStore
+from store.usuario_store import UsuarioStore
 from views.pages import PageRenderer
+
+# Carrega o .env da raiz do projeto (um nível acima de src/).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-only-troque-no-env")
 
-# Cria as tabelas na primeira execução (operação idempotente).
+# Segurança dos cookies de sessão.
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["REMEMBER_COOKIE_HTTPONLY"] = True
+app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
+
+# Inicializa extensões.
+csrf.init_app(app)
+login_manager.init_app(app)
+limiter.init_app(app)
+
+# Cria as tabelas na primeira execução (operação idempotente + migração automática).
 init_db()
 
-# Registra o fechamento da conexão ao fim de cada request.
+# Fecha a conexão ao fim de cada request.
 app.teardown_appcontext(close_db)
+
+# Registra o blueprint de autenticação.
+from auth import bp as auth_bp  # noqa: E402
+
+app.register_blueprint(auth_bp)
 
 # Objetos de longa vida: sem estado por usuário, seguros para reutilizar.
 nutricao_ai = NutricaoAIService.from_env()
 pages = PageRenderer()
 
 
-def _store() -> SQLiteRefeicaoStore:
-    """
-    Constrói um store vinculado ao UUID de sessão do usuário atual.
+@login_manager.user_loader
+def load_user(user_id: str):
+    """Flask-Login chama isso a cada request para recarregar o usuário da sessão."""
+    return UsuarioStore(get_db()).buscar_por_id(int(user_id))
 
-    O UUID é gerado uma vez por browser e gravado no cookie de sessão do Flask.
-    Nunca lemos/escrevemos refeicoes diretamente na sessão — só via store.
-    """
-    if "sessao_id" not in session:
-        session["sessao_id"] = str(uuid.uuid4())
-    return SQLiteRefeicaoStore(get_db(), session["sessao_id"])
+
+def _store() -> SQLiteRefeicaoStore:
+    """Constrói um store vinculado ao usuário logado."""
+    return SQLiteRefeicaoStore(get_db(), current_user.id)
+
+
+# ---------------------------------------------------------------------------
+# Rotas principais (todas protegidas por @login_required)
+# ---------------------------------------------------------------------------
 
 
 @app.route("/")
+@login_required
 def home():
     """Home: exibe o total de calorias do dia e a navegação principal."""
-    store = _store()
-    return pages.render_home(store.totals())
+    return pages.render_home(_store().totals())
 
 
 @app.route("/sobre", methods=["GET", "POST"])
+@login_required
 def sobre():
     """
     Registra uma refeição manualmente.
 
-    POST: envia descrição ao Gemini → salva macros via SQLiteRefeicaoStore.
-    GET:  exibe o formulário com textarea.
+    POST: envia descrição ao Gemini → salva macros.
+    GET:  exibe o formulário.
     """
     store = _store()
-
     if request.method == "POST":
         refe = request.form.get("ref", "")
         macros = nutricao_ai.estimate_macros(refe)
         store.add_from_text(refe, macros)
         return pages.render_meal_registered(refe, macros)
-
     return pages.render_add_meal_form()
 
 
 @app.route("/contato/remover", methods=["POST"])
+@login_required
 def remover_refeicao():
     """Remove uma refeição do histórico do dia pelo seu id."""
     store = _store()
@@ -90,6 +124,7 @@ def remover_refeicao():
 
 
 @app.route("/contato")
+@login_required
 def contato():
     """Resumo diário: totais de macros + lista de refeições."""
     store = _store()
@@ -101,11 +136,12 @@ def contato():
 
 
 @app.route("/sugestao/registrar", methods=["POST"])
+@login_required
 def registrar_sugestao():
     """
     Adiciona uma sugestão da IA ao diário do dia.
 
-    Os macros chegam via campos ocultos do formulário (sem segunda chamada ao Gemini).
+    Os macros chegam via campos ocultos (sem segunda chamada ao Gemini).
     """
     store = _store()
     nome = request.form.get("nome", "Refeição sugerida")
@@ -120,19 +156,45 @@ def registrar_sugestao():
 
 
 @app.route("/sugestao", methods=["GET", "POST"])
+@login_required
 def sugestao_page():
     """
     Fluxo de sugestão de refeição via IA.
 
     POST: pede sugestão ao Gemini e exibe ingredientes + macros.
-    GET:  exibe o formulário de pedido.
+    GET:  exibe o formulário.
     """
     if request.method == "POST":
         pedido = request.form.get("pedido", "")
         sugestao = nutricao_ai.generate_suggestion(pedido)
         return pages.render_suggestion_result(sugestao)
-
     return pages.render_suggestion_form()
+
+
+@app.route("/sugestao/stream", methods=["POST"])
+@login_required
+def sugestao_stream():
+    """
+    Stream da sugestão da IA em tempo real (consumido por JS no formulário).
+
+    Envia o texto bruto do Gemini em chunks conforme chega; ao final, anexa
+    <<<RESULT>>> + HTML renderizado para o front-end substituir o preview.
+    """
+    pedido = request.form.get("pedido", "")
+
+    def gerar():
+        partes = []
+        for trecho in nutricao_ai.stream_suggestion_text(pedido):
+            partes.append(trecho)
+            yield trecho
+        sugestao = nutricao_ai.parse_suggestion("".join(partes))
+        yield "<<<RESULT>>>" + pages.suggestion_result_fragment(sugestao)
+
+    return Response(
+        stream_with_context(gerar()),
+        mimetype="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":

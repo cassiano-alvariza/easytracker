@@ -1,8 +1,8 @@
 """
-Store de refeições com persistência em SQLite.
+SQLite-backed meal store for EasyTracker.
 
-Interface pública idêntica a RefeicaoStore — as rotas em app.py não precisam
-de nenhuma alteração.
+Interface pública idêntica à original — as rotas em app.py não precisam
+de nenhuma alteração além de passar usuario_id em vez de sessao_id.
 """
 
 from __future__ import annotations
@@ -15,47 +15,22 @@ from models import Macros, Refeicao
 
 class SQLiteRefeicaoStore:
     """
-    CRUD + agregação de refeições em SQLite.
-
-    Recebe uma conexão aberta e o UUID da sessão do usuário.
-    O ciclo de vida da conexão é gerenciado por get_db/close_db em db.py.
+    CRUD + agregação de refeições em SQLite, vinculadas a um usuario_id.
 
     Testável sem Flask:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         # rode o DDL de db.py
-        store = SQLiteRefeicaoStore(conn, "uuid-qualquer")
+        store = SQLiteRefeicaoStore(conn, usuario_id=1)
     """
 
-    def __init__(self, conn: sqlite3.Connection, sessao_id: str) -> None:
+    def __init__(self, conn: sqlite3.Connection, usuario_id: int) -> None:
         self._conn = conn
-        self._sid = sessao_id
-        self._ensure_sessao()
-
-    # ------------------------------------------------------------------
-    # Helpers internos
-    # ------------------------------------------------------------------
+        self._uid = usuario_id
 
     @staticmethod
     def _today() -> str:
         return datetime.now().strftime("%Y-%m-%d")
-
-    def _ensure_sessao(self) -> None:
-        """Registra a sessão se for nova; atualiza última atividade se já existir."""
-        self._conn.execute(
-            """
-            INSERT INTO sessoes (id)
-            VALUES (?)
-            ON CONFLICT(id) DO UPDATE SET
-                ultima_atividade = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')
-            """,
-            (self._sid,),
-        )
-        self._conn.commit()
-
-    # ------------------------------------------------------------------
-    # Interface pública
-    # ------------------------------------------------------------------
 
     def list_all(self) -> list[Refeicao]:
         """Retorna todas as refeições do dia, mais antigas primeiro."""
@@ -63,10 +38,10 @@ class SQLiteRefeicaoStore:
             """
             SELECT id, texto, proteinas, carboidratos, gorduras, calorias, horario
             FROM   refeicoes
-            WHERE  sessao_id = ? AND data = ?
+            WHERE  usuario_id = ? AND data = ?
             ORDER  BY id
             """,
-            (self._sid, self._today()),
+            (self._uid, self._today()),
         ).fetchall()
         return [
             Refeicao(
@@ -82,10 +57,9 @@ class SQLiteRefeicaoStore:
         ]
 
     def count(self) -> int:
-        """Número de refeições registradas hoje."""
         row = self._conn.execute(
-            "SELECT COUNT(*) FROM refeicoes WHERE sessao_id = ? AND data = ?",
-            (self._sid, self._today()),
+            "SELECT COUNT(*) FROM refeicoes WHERE usuario_id = ? AND data = ?",
+            (self._uid, self._today()),
         ).fetchone()
         return row[0]
 
@@ -99,9 +73,9 @@ class SQLiteRefeicaoStore:
                 COALESCE(SUM(gorduras),     0.0) AS gorduras,
                 COALESCE(SUM(calorias),     0.0) AS calorias
             FROM   refeicoes
-            WHERE  sessao_id = ? AND data = ?
+            WHERE  usuario_id = ? AND data = ?
             """,
-            (self._sid, self._today()),
+            (self._uid, self._today()),
         ).fetchone()
         return Macros(
             proteinas=row["proteinas"],
@@ -117,11 +91,11 @@ class SQLiteRefeicaoStore:
         cursor = self._conn.execute(
             """
             INSERT INTO refeicoes
-                (sessao_id, data, texto, proteinas, carboidratos, gorduras, calorias, horario)
+                (usuario_id, data, texto, proteinas, carboidratos, gorduras, calorias, horario)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                self._sid,
+                self._uid,
                 self._today(),
                 texto,
                 macros.proteinas,
@@ -145,8 +119,8 @@ class SQLiteRefeicaoStore:
     def remove(self, refeicao_id: int) -> bool:
         """Remove uma refeição pelo id. Retorna False se não encontrada."""
         cursor = self._conn.execute(
-            "DELETE FROM refeicoes WHERE id = ? AND sessao_id = ?",
-            (refeicao_id, self._sid),
+            "DELETE FROM refeicoes WHERE id = ? AND usuario_id = ?",
+            (refeicao_id, self._uid),
         )
         self._conn.commit()
         return cursor.rowcount > 0
